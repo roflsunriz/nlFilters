@@ -1,0 +1,60 @@
+# nlフィルタ定義(文字コード判定用なのでこの行は削除しないこと)
+
+[Script]
+Name = キャッシュアイコン追加(Nアニメ/FREE)
+URL = anime\.nicovideo\.jp/(?:free)?(?:/.*)?
+Append<
+
+// キャッシュ情報を取得する関数を作成
+async function fetchCacheInfo(videoId) {
+    const response = await fetch(`/cache/info/v2?${videoId}`);
+    if (!response.ok) {
+        return null;
+    }
+    const data = await response.json();
+    return data[videoId] && data[videoId].completes.length > 0;
+}
+
+// MutationObserverを使用して、特定の要素が追加されたときにキャッシュアイコンを挿入するスクリプト
+
+// 対象となるノードを取得
+const targetNode = document.body;
+
+// オプションを設定
+const config = { childList: true, subtree: true };
+
+// コールバック関数を修正
+const callback = function(mutationsList, observer) {
+    for (let mutation of mutationsList) {
+        if (mutation.type === 'childList') {
+            // 追加されたノードをチェック
+            mutation.addedNodes.forEach(async node => {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    const anchors = node.querySelectorAll('a[href*="www.nicovideo.jp/watch/"]');
+                    anchors.forEach(async anchor => {
+                        const videoIdMatch = anchor.href.match(/\/watch\/(\w{2}\d+)/);
+                        if (videoIdMatch) {
+                            const videoId = videoIdMatch[1];
+                            const hasCache = await fetchCacheInfo(videoId);
+                            if (hasCache) {
+                                const img = anchor.querySelector('img[src*="thumbnails"]');
+                                if (img) {
+                                    const cacheIcon = document.createElement('div');
+                                    cacheIcon.className = 'cacheIcon <cache$$economy$$dmcCache$$dmcEconomy>IconImg';
+                                    img.insertAdjacentElement('afterend', cacheIcon);
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        }
+    }
+};
+
+// オブザーバーインスタンスを作成
+const observer = new MutationObserver(callback);
+
+// 対象ノードに対してオブザーバーを設定
+observer.observe(targetNode, config);
+>
