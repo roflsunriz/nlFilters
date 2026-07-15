@@ -1,13 +1,9 @@
 .vscode/
 dmcキャッシュのアイコンと色を変えないやつ/
 evac/
-100_common.txt
+100_features.txt
 101_disable_official_function.txt
-102_mlink_video_controller.txt
-103_comment_filter2.txt
-104_video_player.txt
 105_premium_hide.txt
-106_watch_history.txt
 
 # OS
 .DS_Store
