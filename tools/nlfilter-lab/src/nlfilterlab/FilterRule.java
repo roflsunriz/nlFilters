@@ -69,6 +69,9 @@ final class FilterRule {
     Condition contentType;
     Condition require;
     Condition requireHeader;
+    String rawContentType;
+    String rawRequire;
+    String rawRequireHeader;
     int[] statusCodes;
     boolean multi;
     boolean eachLine;

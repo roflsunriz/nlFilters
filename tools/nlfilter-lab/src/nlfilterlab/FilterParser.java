@@ -19,6 +19,7 @@ final class FilterParser {
     private static final Pattern UNSUPPORTED_MACRO = Pattern.compile(
             "(?<!\\\\)\\$(?:LST|INC|SET|REENCODED|REENCODED_BITRATE)\\(|^\\$NEST\\(|<nlcase(?:\\s|>)");
     private static final Pattern NL_VARIABLE = Pattern.compile("<nlVar:([^>]+)>");
+    private static final Pattern LEGACY_VARIABLE = Pattern.compile("<(?:id|smid|memoryId)>");
 
     private enum State {
         OUTSIDE,
@@ -48,6 +49,7 @@ final class FilterParser {
         FilterRule current = null;
         StringBuilder block = new StringBuilder();
         int blockLine = 0;
+        int ruleDiagnosticStart = 0;
 
         for (int index = 0; index < lines.size(); index++) {
             String line = lines.get(index);
@@ -65,7 +67,7 @@ final class FilterParser {
                     } else {
                         finishReplace(current, block.toString(), blockLine, result);
                         validateRule(current, result);
-                        if (current != null) {
+                        if (current != null && !hasErrorSince(result, ruleDiagnosticStart)) {
                             result.rules.add(current);
                         }
                         current = null;
@@ -83,6 +85,7 @@ final class FilterParser {
             if (state == State.OUTSIDE) {
                 if (section != null) {
                     current = new FilterRule(file, lineNumber, section);
+                    ruleDiagnosticStart = result.diagnostics.size();
                     current.trimNeeded = !line.equals(sectionCandidate);
                     state = State.OPTIONS;
                 } else if (sectionCandidate.equalsIgnoreCase("[Debug]")) {
@@ -101,6 +104,7 @@ final class FilterParser {
                 result.diagnostics.add(error(file, lineNumber, "incomplete-rule",
                         "前の " + current.section.label() + " が Replace< ... > で完了していません"));
                 current = new FilterRule(file, lineNumber, section);
+                ruleDiagnosticStart = result.diagnostics.size();
                 current.trimNeeded = !line.equals(sectionCandidate);
                 continue;
             }
@@ -120,9 +124,12 @@ final class FilterParser {
                 if (current.section != FilterRule.Section.SCRIPT && current.section != FilterRule.Section.STYLE) {
                     result.diagnostics.add(error(file, lineNumber, "invalid-append",
                             "Append< は [Script] または [Style] で使用してください"));
+                } else {
+                    current.eachLine = false;
+                    current.replaceOnly = true;
+                    current.rawMatches.add(current.section == FilterRule.Section.STYLE ? "(?=</head>)" : "(?=</body>)");
+                    current.matches.add(Pattern.compile(current.rawMatches.get(0)));
                 }
-                current.rawMatches.add(current.section == FilterRule.Section.STYLE ? "(?=</head>)" : "(?=</body>)");
-                current.matches.add(Pattern.compile(current.rawMatches.get(0)));
                 block.setLength(0);
                 blockLine = lineNumber;
                 state = State.REPLACE;
@@ -224,10 +231,19 @@ final class FilterParser {
                     }
                 }
                 case "name" -> rule.name = value;
-                case "require" -> rule.require = compileCondition(value);
+                case "require" -> {
+                    rule.rawRequire = value;
+                    rule.require = compileCondition(value);
+                }
                 case "idgroup" -> parseIdGroup(rule, value, lineNumber, result);
-                case "requireheader" -> rule.requireHeader = compileCondition(value);
-                case "contenttype" -> rule.contentType = compileCondition(value);
+                case "requireheader" -> {
+                    rule.rawRequireHeader = value;
+                    rule.requireHeader = compileCondition(value);
+                }
+                case "contenttype" -> {
+                    rule.rawContentType = value;
+                    rule.contentType = compileCondition(value);
+                }
                 case "matchlocal" -> rule.matchLocal = parseBoolean(rule, lineNumber, key, value, result);
                 case "addlist" -> rule.addList = value;
                 case "addvariable" -> rule.addVariable = value;
@@ -313,8 +329,20 @@ final class FilterParser {
         }
         if (rule.addList != null || rule.addVariable != null || rule.section == FilterRule.Section.REQUEST_HEADER ||
                 rule.section == FilterRule.Section.CONFIG) {
+            rule.simulationSupported = false;
             result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
                     "simulation-limit", rule.section.label() + " の状態変更はローカルテスターでは実行しません"));
+        }
+        if (rule.idGroupSecondRaw != null && !rule.idGroupSecondRaw.matches("\\d+")) {
+            rule.simulationSupported = false;
+            result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
+                    "simulation-limit", "idGroup の非数字第2引数は拡張依存のため疑似適用をスキップします"));
+        }
+        if (containsUnsupported(rule.rawRequire) || containsUnsupported(rule.rawRequireHeader) ||
+                containsUnsupported(rule.rawContentType)) {
+            rule.simulationSupported = false;
+            result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
+                    "unsupported-condition", "条件式に未対応の動的マクロがあるため疑似適用をスキップします"));
         }
 
         int urlGroups = rule.urlPattern == null ? -1 : rule.urlPattern.matcher("").groupCount();
@@ -333,7 +361,8 @@ final class FilterParser {
             Matcher groupMatcher = REPLACEMENT_GROUP.matcher(replacement);
             while (groupMatcher.find()) {
                 int reference = Integer.parseInt(groupMatcher.group(1));
-                if (groups >= 0 && reference > groups) {
+                int firstDigit = groupMatcher.group(1).charAt(0) - '0';
+                if (groups >= 0 && reference > groups && firstDigit > groups) {
                     result.diagnostics.add(error(rule.file, rule.sectionLine, "replacement-group-range",
                             "$" + reference + " は Match のキャプチャ数 " + groups + " を超えています"));
                 }
@@ -347,7 +376,9 @@ final class FilterParser {
                 }
             }
             Matcher headerMatcher = REQUIRE_HEADER_GROUP.matcher(replacement);
+            boolean hasRequireHeaderReference = false;
             while (headerMatcher.find()) {
+                hasRequireHeaderReference = true;
                 int reference = Integer.parseInt(headerMatcher.group(1));
                 if (requireHeaderGroups < 0) {
                     result.diagnostics.add(error(rule.file, rule.sectionLine, "require-header-missing",
@@ -358,6 +389,11 @@ final class FilterParser {
                                     requireHeaderGroups + " を超えています"));
                 }
             }
+            if (hasRequireHeaderReference) {
+                rule.simulationSupported = false;
+                result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
+                        "simulation-limit", "$RequireHeaderN の置換展開は未対応のため疑似適用をスキップします"));
+            }
             Matcher nlVariable = NL_VARIABLE.matcher(replacement);
             boolean unsupportedVariable = false;
             while (nlVariable.find()) {
@@ -365,12 +401,21 @@ final class FilterParser {
             }
             if (UNSUPPORTED_MACRO.matcher(replacement).find() ||
                     UNSUPPORTED_MACRO.matcher(rule.rawMatches.get(index)).find() ||
-                    unsupportedVariable) {
+                    unsupportedVariable || LEGACY_VARIABLE.matcher(replacement).find()) {
                 rule.simulationSupported = false;
                 result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
                         "unsupported-macro", "未対応または状態を持つマクロがあるため、ローカルテスターではこのルールをスキップします"));
             }
         }
+    }
+
+    private static boolean containsUnsupported(String value) {
+        return value != null && UNSUPPORTED_MACRO.matcher(value.startsWith("!") ? value.substring(1) : value).find();
+    }
+
+    private static boolean hasErrorSince(ParseResult result, int start) {
+        return result.diagnostics.subList(Math.min(start, result.diagnostics.size()), result.diagnostics.size())
+                .stream().anyMatch(diagnostic -> diagnostic.severity() == Diagnostic.Severity.ERROR);
     }
 
     private static Diagnostic error(Path file, int line, String code, String message) {

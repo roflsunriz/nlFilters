@@ -4,7 +4,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,6 +28,7 @@ final class FilterEngine {
 
     SimulationResult simulate(List<FilterRule> rules, SimulationRequest request, String content) {
         SimulationResult result = new SimulationResult(content);
+        long startedAtSeconds = System.currentTimeMillis() / 1000L;
         List<FilterRule> styles = new ArrayList<>();
         List<FilterRule> scripts = new ArrayList<>();
         List<FilterRule> delayed = new ArrayList<>();
@@ -46,7 +46,7 @@ final class FilterEngine {
                 if (rule.replaceDelay) {
                     delayed.add(rule);
                 } else {
-                    applyReplace(rule, request, result);
+                    applyReplace(rule, request, result, startedAtSeconds);
                 }
             } else if (rule.section == FilterRule.Section.STYLE) {
                 styles.add(rule);
@@ -55,10 +55,10 @@ final class FilterEngine {
             }
         }
 
-        appendCollected(styles, "style", "</head>", request, result);
-        appendCollected(scripts, "script", "</body>", request, result);
+        appendCollected(styles, "style", "</head>", result);
+        appendCollected(scripts, "script", "</body>", result);
         for (FilterRule rule : delayed) {
-            applyReplace(rule, request, result);
+            applyReplace(rule, request, result, startedAtSeconds);
         }
         return result;
     }
@@ -94,7 +94,7 @@ final class FilterEngine {
                 "Accept: " + request.contentType() + "\r\n";
     }
 
-    private void applyReplace(FilterRule rule, SimulationRequest request, SimulationResult result) {
+    private void applyReplace(FilterRule rule, SimulationRequest request, SimulationResult result, long startedAtSeconds) {
         int replacedCount = 0;
         String working = result.rendered;
         for (int index = 0; index < rule.matches.size(); index++) {
@@ -109,7 +109,7 @@ final class FilterEngine {
                 String raw = index < rule.replacements.size() ? rule.replacements.get(index) : "";
                 String replacement = selectCacheVariant(rule, matcher, raw, request.cacheState());
                 if (replacement != null) {
-                    replacement = expandStaticMacros(rule, request, replacement);
+                    replacement = expandStaticMacros(rule, request, replacement, startedAtSeconds);
                     try {
                         matcher.appendReplacement(output,
                                 rule.replaceOnly ? Matcher.quoteReplacement(replacement) : replacement);
@@ -152,6 +152,9 @@ final class FilterEngine {
             }
         } catch (RuntimeException exception) {
             return null;
+        }
+        if (videoId == null && rule.noCache) {
+            return raw;
         }
         if ((videoId == null || videoId.matches("\\d{10,}")) && alternateId != null &&
                 alternateId.matches("\\d+")) {
@@ -198,6 +201,13 @@ final class FilterEngine {
         }
         matcher = LEGACY_CACHE_SPLIT.matcher(raw);
         if (matcher.matches()) {
+            if (matcher.group(2).isEmpty() && matcher.group(3).isEmpty()) {
+                variants[0] = matcher.group(1);
+                variants[1] = matcher.group(4);
+                variants[2] = variants[0];
+                variants[3] = variants[1];
+                return variants;
+            }
             variants[0] = matcher.group(1) + matcher.group(2) + matcher.group(4);
             variants[1] = matcher.group(1) + matcher.group(3) + matcher.group(4);
             variants[2] = variants[0];
@@ -206,7 +216,8 @@ final class FilterEngine {
         return variants;
     }
 
-    private String expandStaticMacros(FilterRule rule, SimulationRequest request, String replacement) {
+    private String expandStaticMacros(FilterRule rule, SimulationRequest request, String replacement,
+            long startedAtSeconds) {
         if (rule.urlPattern != null && replacement.contains("$URL")) {
             Matcher url = rule.urlPattern.matcher(request.url());
             if (url.lookingAt()) {
@@ -214,7 +225,7 @@ final class FilterEngine {
                 StringBuffer output = new StringBuffer();
                 while (macro.find()) {
                     int group = Integer.parseInt(macro.group(1));
-                    String value = group <= url.groupCount() && url.group(group) != null ? url.group(group) : macro.group();
+                    String value = group <= url.groupCount() ? (url.group(group) == null ? "" : url.group(group)) : macro.group();
                     macro.appendReplacement(output, Matcher.quoteReplacement(value));
                 }
                 replacement = macro.appendTail(output).toString();
@@ -227,8 +238,8 @@ final class FilterEngine {
             String path = timestamp.group(1);
             String queryPrefix = timestamp.group(2) == null ? "?" : timestamp.group(2);
             Path target = repositoryRoot.getParent().resolve(path).normalize();
-            String value = path;
-            if (target.startsWith(repositoryRoot.getParent()) && Files.isRegularFile(target)) {
+            String value = path.isEmpty() ? Long.toString(startedAtSeconds) : path;
+            if (!path.isEmpty() && target.startsWith(repositoryRoot.getParent()) && Files.isRegularFile(target)) {
                 try {
                     value = path + queryPrefix + (Files.getLastModifiedTime(target).toMillis() / 1000L);
                 } catch (Exception ignored) {
@@ -256,21 +267,20 @@ final class FilterEngine {
         return replacement;
     }
 
-    private void appendCollected(List<FilterRule> rules, String elementName, String marker,
-            SimulationRequest request, SimulationResult result) {
+    private void appendCollected(List<FilterRule> rules, String elementName, String marker, SimulationResult result) {
         if (rules.isEmpty()) {
             return;
         }
         StringBuilder payload = new StringBuilder();
         for (FilterRule rule : rules) {
-            String body = rule.replacements.isEmpty() ? "" :
-                    expandStaticMacros(rule, request, rule.replacements.get(0));
+            // 本体のwrapAndConcatはAppend本文へ置換マクロ展開を行わない。
+            String body = rule.replacements.isEmpty() ? "" : rule.replacements.get(0);
             payload.append('<').append(elementName).append(" type=\"")
                     .append(elementName.equals("style") ? "text/css" : "text/javascript")
                     .append("\">\r\n/* ").append(rule.identifier()).append(" */\r\n")
                     .append(body).append("\r\n</").append(elementName).append(">\r\n");
         }
-        int position = result.rendered.toLowerCase(Locale.ROOT).indexOf(marker.toLowerCase(Locale.ROOT));
+        int position = result.rendered.indexOf(marker);
         if (position >= 0) {
             result.rendered = result.rendered.substring(0, position) + payload + result.rendered.substring(position);
             for (FilterRule rule : rules) {

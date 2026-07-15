@@ -24,6 +24,15 @@
 - 対象ファイル内の説明、変更履歴、依存するフィルターを先に読む。名前が近い `10` と `11`、`15` と `15_02` は役割を分担しているため、片方だけを見て重複実装しない。
 - 公式同梱フィルターの背景と運用は `C:\NicoCache_nl\documents\Readme_nl+mod.txt`、現在の実装は `C:\NicoCache_nl\src\dareka\processor\impl\EasyRewriter.java` を参照する。本体ソースはこのリポジトリの変更対象ではない。
 - JavaScript や CSS が参照する `/local/*` の実体、`window.NicoCache_nl`、`/cache/*` API を変更・利用するときは、`C:\NicoCache_nl\local`、本体実装、呼び出し元を検索して契約を確認する。
+- 追跡中の nlFilter を編集する前に `.\tools\nlfilter-lab\nlfilter-lab.ps1 source-check` と `.\tools\nlfilter-lab\nlfilter-lab.ps1 check` を実行し、本体パーサーソースとの基準一致と既存構文の正常性を確認する。
+
+## nlFilter Lab の使用
+
+- 追跡中の `.txt` を変更した作業では、最低限 `.\tools\nlfilter-lab\nlfilter-lab.ps1 check <対象ファイル>` と `.\tools\nlfilter-lab\nlfilter-lab.ps1 test` を実行する。コーディングエージェントから結果を扱う場合は `check --json` を使ってよい。
+- HTML、JavaScript、CSS、SPA挙動へ影響する変更では `.\tools\nlfilter-lab\nlfilter-lab.ps1 headless` を使う。対象に応じて `watch`、`search`、`anime` のfixture、5種類のキャッシュ状態、`--spa-add` を選び、`result.json`、`final.html`、`console.json`、`screenshot.png` を確認する。生成物は `.cache/nlfilter-lab/` 配下に置き、Gitへ追加しない。
+- 対話的な調査が必要なら `.\tools\nlfilter-lab\nlfilter-lab.ps1 serve` を使う。Labは疑似実装なので、最終的な実環境確認が必要な変更では NicoCache_nl 経由の検証も省略しない。
+- NicoCache_nl の nlFilter パーサーは滅多に変わらないが、変更される可能性はある。`source-check` または `check` がソース差異を報告した場合や、新しい構文・マクロを扱う場合は、`C:\NicoCache_nl\src\dareka\processor\impl\EasyRewriter.java`、`C:\NicoCache_nl\src\dareka\common\regex\JavaPattern.java`、`JavaMatcher.java`、`NestPattern.java`、`NestMatcher.java` を確認し、必要に応じて構文チェッカー、ローカルテスター、互換テストを修正する。
+- `tools\nlfilter-lab\parser-baseline.properties` のハッシュだけを更新して差異を解消してはいけない。本体の変更内容を監査し、Lab側の修正とテストが完了した後に基準値を更新する。
 
 ## 詳細リファレンス
 

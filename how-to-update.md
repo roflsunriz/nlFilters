@@ -14,6 +14,7 @@
 2. リポジトリ直下で次を実行します。
 
 ```powershell
+.\tools\nlfilter-lab\nlfilter-lab.ps1 source-check
 .\tools\nlfilter-lab\nlfilter-lab.ps1 test
 .\tools\nlfilter-lab\nlfilter-lab.ps1 check
 git diff --check
@@ -23,9 +24,14 @@ git diff --check
 
 ```powershell
 .\tools\nlfilter-lab\nlfilter-lab.ps1 serve
+.\tools\nlfilter-lab\nlfilter-lab.ps1 headless --fixture search --cache-state DMC --spa-add 1
 ```
 
 4. 追跡フィルターを変更した場合は、Labだけで完了扱いにせず、NicoCache_nl経由の対象ページでも確認します。
+
+## 本体パーサーが変わった場合
+
+`source-check` が差異を報告したら、`EasyRewriter.java`、`JavaPattern.java`、`JavaMatcher.java`、`NestPattern.java`、`NestMatcher.java` の変更内容を確認します。構文受理、正規表現、置換、キャッシュ分岐への影響をテストへ反映し、必要ならLab実装を修正します。全テスト完了後にだけ `tools/nlfilter-lab/parser-baseline.properties` のSHA-256を現在値へ更新します。基準値だけを先に更新してはいけません。
 
 ## 復旧
 

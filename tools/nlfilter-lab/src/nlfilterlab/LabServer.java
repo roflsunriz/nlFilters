@@ -31,6 +31,7 @@ final class LabServer {
             "form-action 'none'; frame-ancestors 'self'";
 
     private final Path repositoryRoot;
+    private final Path labRoot;
     private final Path webRoot;
     private final Path fixtureRoot;
     private final Path localRoot;
@@ -45,6 +46,7 @@ final class LabServer {
 
     LabServer(Path repositoryRoot, Path labRoot, int port) throws Exception {
         this.repositoryRoot = repositoryRoot;
+        this.labRoot = labRoot;
         this.webRoot = labRoot.resolve("web").normalize();
         this.fixtureRoot = labRoot.resolve("fixtures").normalize();
         this.localRoot = repositoryRoot.getParent().resolve("local").normalize();
@@ -135,7 +137,9 @@ final class LabServer {
                     .append(",\"url\":").append(Json.quote(fixture.url))
                     .append(",\"contentType\":").append(Json.quote(fixture.contentType)).append('}');
         }
-        json.append("]}");
+        json.append("],\"parserCompatibility\":")
+                .append(ParserCompatibility.toJson(ParserCompatibility.inspect(repositoryRoot, labRoot)))
+                .append('}');
         sendJson(exchange, 200, json.toString());
     }
 
@@ -454,18 +458,6 @@ final class LabServer {
     }
 
     private static byte[] readBody(HttpExchange exchange, int maximumBytes) throws IOException {
-        String contentLength = exchange.getRequestHeaders().getFirst("Content-Length");
-        if (contentLength != null) {
-            try {
-                if (Long.parseLong(contentLength) > maximumBytes) {
-                    send(exchange, 413, "text/plain; charset=utf-8", "Request body too large");
-                    return null;
-                }
-            } catch (NumberFormatException ignored) {
-                send(exchange, 400, "text/plain; charset=utf-8", "Invalid Content-Length");
-                return null;
-            }
-        }
         byte[] body = exchange.getRequestBody().readNBytes(maximumBytes + 1);
         if (body.length > maximumBytes) {
             send(exchange, 413, "text/plain; charset=utf-8", "Request body too large");

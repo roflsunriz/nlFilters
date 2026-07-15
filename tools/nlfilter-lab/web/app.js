@@ -48,7 +48,7 @@
     }).join("");
     const errorCount = config.filters.reduce((sum, filter) => sum + filter.errors, 0);
     const warningCount = config.filters.reduce((sum, filter) => sum + filter.warnings, 0);
-    elements.summary.textContent = `${config.filters.length} files · ${errorCount} errors · ${warningCount} warnings`;
+    elements.summary.textContent = `${config.filters.length} files · ${errorCount} errors · ${warningCount} warnings · parser ${config.parserCompatibility.status}`;
     applyFixtureDefaults();
     await renderPreview();
   }

@@ -25,17 +25,24 @@ public final class NlFilterLabTests {
         run("追跡中フィルターをエラーなく解析", () -> trackedFiltersParse(repository));
         run("未閉鎖ブロックを検出", () -> unclosedBlock(temporary));
         run("不正なJava正規表現を検出", () -> invalidPattern(temporary));
+        run("構文エラーのルールを疑似適用対象に残さない", () -> invalidRuleDiscarded(temporary));
         run("未知セクションを検出", () -> unknownSection(temporary));
         run("EachLine行数不一致を検出", () -> eachLineMismatch(temporary));
         run("EachLineを行ごとに適用", () -> eachLine(repository, temporary));
         run("URLとContent-Typeの非対象を除外", () -> contextSelection(repository, temporary));
         run("idGroupの5状態を切り替え", () -> cacheVariants(repository));
         run("idGroup第2値から動画IDを補完", () -> idGroupFallback(repository, temporary));
+        run("単独キャッシュ分岐とnoCache null groupを本体互換で処理", () -> legacyCacheBranches(repository, temporary));
+        run("未対応の状態機能と条件マクロを確実にスキップ", () -> unsupportedRules(temporary));
+        run("URL optional groupと空TSを本体互換で展開", () -> macroCompatibility(repository, temporary));
         run("StyleとScriptをhead/bodyへ挿入", () -> appendSections(repository, temporary));
+        run("Appendの大文字小文字と不正セクションを厳格に処理", () -> appendCompatibility(repository, temporary));
         run("Replace内のCRLFを維持", () -> crlfReplacement(repository, temporary));
         run("末尾空白付きセクションのtrimモード", () -> trimMode(repository, temporary));
         run("freeSpaceをJavaScript数値へ置換", () -> freeSpaceVariable(repository));
         run("追跡ファイルを辞書順で列挙", () -> trackedOrder(repository));
+        run("NicoCache_nlパーサーソースの基準一致", () -> parserSourceBaseline(repository));
+        run("パーサーソースの差異と部分欠落を検出", () -> parserSourceChanges(repository, temporary));
         run("ローカルサーバーのOrigin・本文・パス境界", () -> serverBoundaries(repository));
 
         System.out.println("PASS: " + passed + " tests");
@@ -62,6 +69,13 @@ public final class NlFilterLabTests {
                 "[Replace]\nName = x\nURL = example\\.com/\nMatch<\n([\n>\nReplace<\nx\n>\n");
         ParseResult result = new FilterParser().parse(file);
         assertDiagnostic(result, "pattern");
+    }
+
+    private static void invalidRuleDiscarded(Path temporary) throws Exception {
+        Path file = write(temporary, "invalid-discarded.txt", HEADER +
+                "[Replace]\nName = bad\nURL = example\\.com/\nMatch<\n([\n>\nReplace<\nchanged\n>\n");
+        ParseResult result = new FilterParser().parse(file);
+        assertEquals(0, result.rules.size(), "不正ルール数");
     }
 
     private static void eachLine(Path repository, Path temporary) throws Exception {
@@ -126,6 +140,42 @@ public final class NlFilterLabTests {
         assertEquals("sm9-cached", result.rendered, "idGroup第2値補完");
     }
 
+    private static void legacyCacheBranches(Path repository, Path temporary) throws Exception {
+        Path file = write(temporary, "legacy-cache.txt", HEADER +
+                "[Replace]\nName = branch\nURL = example\\.com/\nidGroup = 1\nMatch<\n(?:id=(sm\\d+)|none)\n>\n" +
+                "Replace<\nnormal<$>economy\n>\n" +
+                "[Replace]\nName = no-cache-null\nURL = example\\.com/\nidGroup = !1\nMatch<\n(?:id=(sm\\d+)|empty)\n>\nReplace<\nmissing\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        SimulationResult normal = simulate(repository, List.of(parsed.rules.get(0)), "id=sm9", "https://example.com/",
+                "text/html", FilterRule.CacheState.NORMAL);
+        SimulationResult economy = simulate(repository, List.of(parsed.rules.get(0)), "id=sm9", "https://example.com/",
+                "text/html", FilterRule.CacheState.ECONOMY);
+        SimulationResult nullNoCache = simulate(repository, List.of(parsed.rules.get(1)), "empty", "https://example.com/",
+                "text/html", FilterRule.CacheState.NORMAL);
+        assertEquals("normal", normal.rendered, "通常単独分岐");
+        assertEquals("economy", economy.rendered, "エコノミー単独分岐");
+        assertEquals("missing", nullNoCache.rendered, "null noCache分岐");
+    }
+
+    private static void unsupportedRules(Path temporary) throws Exception {
+        Path file = write(temporary, "unsupported.txt", HEADER +
+                "[Replace]\nName = list\nURL = example\\.com/\nAddList = x.lst\nMatch<\na\n>\nReplace<\nb\n>\n" +
+                "[Replace]\nName = condition\nURL = example\\.com/\nRequire = $LST(\"x.lst\")\nMatch<\na\n>\nReplace<\nb\n>\n" +
+                "[Replace]\nName = header-ref\nURL = example\\.com/\nRequireHeader = (GET)\nMatch<\na\n>\nReplace<\n$RequireHeader1\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        assertEquals(3, parsed.rules.size(), "構文上受理する未対応ルール数");
+        assertTrue(parsed.rules.stream().noneMatch(rule -> rule.simulationSupported), "未対応ルールを全てスキップ");
+    }
+
+    private static void macroCompatibility(Path repository, Path temporary) throws Exception {
+        Path file = write(temporary, "macro-compat.txt", HEADER +
+                "[Replace]\nName = macros\nFullURL = https://example\\.com/(foo)?\nMatch<\nx\n>\nReplace<\n[$URL1][$TS()]\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        String rendered = simulate(repository, parsed.rules, "x", "https://example.com/", "text/html",
+                FilterRule.CacheState.NONE).rendered;
+        assertTrue(rendered.matches("\\[\\]\\[\\d{10}\\]"), "optional URL groupとTS: " + rendered);
+    }
+
     private static void appendSections(Path repository, Path temporary) throws Exception {
         Path file = write(temporary, "append.txt", HEADER +
                 "[Style]\nName = style\nURL = example\\.com/\nAppend<\n.test { color: red; }\n>\n" +
@@ -136,6 +186,55 @@ public final class NlFilterLabTests {
         assertContains(result.rendered, "<style type=\"text/css\">", "Styleタグ");
         assertTrue(result.rendered.indexOf(".test { color: red; }") < result.rendered.indexOf("</head>"), "Style挿入位置");
         assertTrue(result.rendered.indexOf("window.tested = true;") < result.rendered.indexOf("</body>"), "Script挿入位置");
+    }
+
+    private static void appendCompatibility(Path repository, Path temporary) throws Exception {
+        Path upper = write(temporary, "append-upper.txt", HEADER +
+                "[Style]\nName = style\nURL = example\\.com/\nEachLine = TRUE\nReplaceOnly = FALSE\nAppend<\n.x{content:\"<nlVar:VERSION>\"}\n>\n");
+        ParseResult parsed = new FilterParser().parse(upper);
+        assertTrue(parsed.rules.get(0).replaceOnly && !parsed.rules.get(0).eachLine, "Append強制フラグ");
+        String lower = "<html><head></head><body></body></html>";
+        assertContains(simulate(repository, parsed.rules, lower, "https://example.com/", "text/html",
+                FilterRule.CacheState.NONE).rendered, "<nlVar:VERSION>", "Append本文はマクロ展開しない");
+        String html = "<HTML><HEAD></HEAD><BODY></BODY></HTML>";
+        assertEquals(html, simulate(repository, parsed.rules, html, "https://example.com/", "text/html",
+                FilterRule.CacheState.NONE).rendered, "大文字HEADには挿入しない");
+
+        Path invalid = write(temporary, "append-invalid.txt", HEADER +
+                "[Replace]\nName = invalid\nURL = example\\.com/\nAppend<\nx\n>\n");
+        ParseResult invalidResult = new FilterParser().parse(invalid);
+        assertDiagnostic(invalidResult, "invalid-append");
+        assertEquals(0, invalidResult.rules.size(), "不正Appendルール数");
+    }
+
+    private static void parserSourceBaseline(Path repository) {
+        Path labRoot = Path.of(System.getProperty("nlfilterlab.root", "tools/nlfilter-lab")).toAbsolutePath().normalize();
+        ParserCompatibility.Report report = ParserCompatibility.inspect(repository, labRoot);
+        assertEquals("matched", report.statusName(), "parser source status");
+    }
+
+    private static void parserSourceChanges(Path repository, Path temporary) throws Exception {
+        Path labRoot = Path.of(System.getProperty("nlfilterlab.root", "tools/nlfilter-lab")).toAbsolutePath().normalize();
+        String baseline = Files.readString(labRoot.resolve("parser-baseline.properties"), StandardCharsets.UTF_8);
+
+        Path mismatchLab = temporary.resolve("parser-mismatch-lab");
+        Files.createDirectories(mismatchLab);
+        Files.writeString(mismatchLab.resolve("parser-baseline.properties"),
+                baseline.replaceFirst("EasyRewriter\\.java=[0-9a-f]+", "EasyRewriter.java=00"), StandardCharsets.UTF_8);
+        assertEquals("mismatch", ParserCompatibility.inspect(repository, mismatchLab).statusName(), "hash mismatch");
+
+        Path partialParent = temporary.resolve("parser-partial");
+        Path partialRepository = partialParent.resolve("nlFilters");
+        Path partialSource = partialParent.resolve("src/dareka/processor/impl/EasyRewriter.java");
+        Path partialLab = temporary.resolve("parser-partial-lab");
+        Files.createDirectories(partialRepository);
+        Files.createDirectories(partialSource.getParent());
+        Files.createDirectories(partialLab);
+        Files.copy(repository.getParent().resolve("src/dareka/processor/impl/EasyRewriter.java"), partialSource,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        Files.writeString(partialLab.resolve("parser-baseline.properties"), baseline, StandardCharsets.UTF_8);
+        assertEquals("source-partial", ParserCompatibility.inspect(partialRepository, partialLab).statusName(),
+                "partial source");
     }
 
     private static void crlfReplacement(Path repository, Path temporary) throws Exception {
@@ -165,6 +264,8 @@ public final class NlFilterLabTests {
             HttpResponse<String> config = client.send(HttpRequest.newBuilder(URI.create(base + "/api/config")).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             assertEquals(200, config.statusCode(), "config status");
+            assertContains(config.body(), "\"parserCompatibility\":{\"status\":\"matched\"",
+                    "config parser compatibility");
 
             HttpResponse<String> sandboxOrigin = client.send(HttpRequest.newBuilder(URI.create(base + "/api/config"))
                             .header("Origin", "null").GET().build(), HttpResponse.BodyHandlers.ofString());

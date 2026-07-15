@@ -80,6 +80,8 @@
     if (event.data?.type === "nlfilter-lab" && event.data.action === "spa-add") addSpaCard();
   });
   document.addEventListener("DOMContentLoaded", () => {
+    const spaAdd = Math.min(20, Math.max(0, Number.parseInt(new URLSearchParams(location.search).get("spaAdd") || "0", 10) || 0));
+    for (let index = 0; index < spaAdd; index++) addSpaCard();
     notifyState();
     new MutationObserver(() => setTimeout(notifyState, 0)).observe(document.body, { childList: true, subtree: true });
   });
