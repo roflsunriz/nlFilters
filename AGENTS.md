@@ -33,6 +33,7 @@
 - 対話的な調査が必要なら `.\tools\nlfilter-lab\nlfilter-lab.ps1 serve` を使う。Labは疑似実装なので、最終的な実環境確認が必要な変更では NicoCache_nl 経由の検証も省略しない。
 - NicoCache_nl の nlFilter パーサーは滅多に変わらないが、変更される可能性はある。`source-check` または `check` がソース差異を報告した場合や、新しい構文・マクロを扱う場合は、`C:\NicoCache_nl\src\dareka\processor\impl\EasyRewriter.java`、`C:\NicoCache_nl\src\dareka\common\regex\JavaPattern.java`、`JavaMatcher.java`、`NestPattern.java`、`NestMatcher.java` を確認し、必要に応じて構文チェッカー、ローカルテスター、互換テストを修正する。
 - `tools\nlfilter-lab\parser-baseline.properties` のハッシュだけを更新して差異を解消してはいけない。本体の変更内容を監査し、Lab側の修正とテストが完了した後に基準値を更新する。
+- Lab自体または本体パーサーとの互換処理を変更した場合は `.\tools\nlfilter-lab\nlfilter-lab.ps1 compatibility --json` も実行し、`source.status` と `productionOracle.status` がともに `matched` であること、残る差が `externalBoundaries` に限定されることを確認する。
 
 ## 詳細リファレンス
 

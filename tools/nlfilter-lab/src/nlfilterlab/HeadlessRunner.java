@@ -19,6 +19,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class HeadlessRunner {
+    private record OracleSummary(String status, int matched, int mismatched, int unavailable) {
+    }
+
     private static final Pattern TOKEN = Pattern.compile("\\\"token\\\":\\\"([^\\\"]+)\\\"");
     private static final Pattern PREVIEW_URL = Pattern.compile("\\\"previewUrl\\\":\\\"([^\\\"]+)\\\"");
 
@@ -50,6 +53,8 @@ final class HeadlessRunner {
             if (compatibility.statusName().equals("mismatch") || compatibility.statusName().equals("source-partial")) {
                 failures.add("NicoCache_nl のパーサーソースが変わっています。互換性の再監査が必要です");
             }
+            OracleSummary oracle = productionSummary(repositoryRoot, options);
+            if (oracle.mismatched > 0) failures.add("本体パーサーとLabの内部表現が一致しません");
             Path browser = options.browser != null ? options.browser : findBrowser();
             if (browser == null || !Files.isRegularFile(browser)) {
                 throw new IOException("Chrome または Edge が見つかりません。--browser で実行ファイルを指定してください");
@@ -124,13 +129,38 @@ final class HeadlessRunner {
         List<String> fields = new ArrayList<>();
         fields.add(pair("fixture", options.fixture));
         fields.add(pair("cacheState", options.cacheState));
+        fields.add(pair("reencoded", options.reencoded));
+        fields.add(pair("reencodedBitrate", Integer.toString(options.reencodedBitrate)));
         if (options.url != null) fields.add(pair("url", options.url));
         if (options.contentType != null) fields.add(pair("contentType", options.contentType));
-        List<Path> files = options.noFilters ? List.of() : options.files.isEmpty()
-                ? RepositoryFilters.tracked(repositoryRoot)
-                : RepositoryFilters.resolveExplicit(repositoryRoot, options.files);
+        List<Path> files = selectedFiles(repositoryRoot, options);
         for (Path file : files) fields.add(pair("file", file.getFileName().toString()));
         return String.join("&", fields);
+    }
+
+    private static List<Path> selectedFiles(Path repositoryRoot, Options options) throws Exception {
+        return options.noFilters ? List.of() : options.files.isEmpty()
+                ? RepositoryFilters.tracked(repositoryRoot)
+                : RepositoryFilters.resolveExplicit(repositoryRoot, options.files);
+    }
+
+    private static OracleSummary productionSummary(Path repositoryRoot, Options options) {
+        int matched = 0;
+        int mismatched = 0;
+        int unavailable = 0;
+        try {
+            FilterParser parser = new FilterParser();
+            for (Path file : selectedFiles(repositoryRoot, options)) {
+                ParserConformance.Report report = ParserConformance.compare(repositoryRoot, file, parser.parse(file));
+                if (report.status().equals("matched")) matched++;
+                else if (report.status().equals("mismatch")) mismatched++;
+                else unavailable++;
+            }
+        } catch (Exception exception) {
+            unavailable++;
+        }
+        return new OracleSummary(mismatched > 0 ? "mismatch" : unavailable > 0 ? "unavailable" : "matched",
+                matched, mismatched, unavailable);
     }
 
     private static int runBrowser(Path browser, Path profile, Options options, String url, boolean dumpDom,
@@ -160,14 +190,20 @@ final class HeadlessRunner {
     private static String resultJson(Path repositoryRoot, Path labRoot, Options options, Path output, String browser,
             String renderJson, String logsJson, List<String> failures, int exitCode) {
         ParserCompatibility.Report compatibility = ParserCompatibility.inspect(repositoryRoot, labRoot);
+        OracleSummary oracle = productionSummary(repositoryRoot, options);
         return "{\"schemaVersion\":1,\"status\":" + Json.quote(exitCode == 0 ? "passed" : "failed") +
                 ",\"exitCode\":" + exitCode +
                 ",\"fixture\":" + Json.quote(options.fixture) +
                 ",\"cacheState\":" + Json.quote(options.cacheState) +
+                ",\"reencoded\":" + Json.quote(options.reencoded) +
+                ",\"reencodedBitrate\":" + options.reencodedBitrate +
                 ",\"spaAdd\":" + options.spaAdd +
                 ",\"viewport\":{\"width\":" + options.width + ",\"height\":" + options.height + "}" +
                 ",\"browser\":" + Json.quote(browser) +
                 ",\"parserCompatibility\":" + ParserCompatibility.toJson(compatibility) +
+                ",\"productionParser\":{\"status\":" + Json.quote(oracle.status) +
+                ",\"matchedFiles\":" + oracle.matched + ",\"mismatchedFiles\":" + oracle.mismatched +
+                ",\"unavailableFiles\":" + oracle.unavailable + "}" +
                 ",\"metrics\":{\"diagnosticErrors\":" + count(renderJson, "\\\"severity\\\":\\\"ERROR\\\"") +
                 ",\"consoleErrors\":" + count(logsJson, "\\\"level\\\":\\\"error\\\"") + "}" +
                 ",\"artifacts\":{\"result\":" + Json.quote(output.resolve("result.json").toString()) +
@@ -238,6 +274,8 @@ final class HeadlessRunner {
     private static final class Options {
         String fixture = "watch";
         String cacheState = "NONE";
+        String reencoded = "null";
+        int reencodedBitrate;
         int spaAdd;
         int width = 1280;
         int height = 900;
@@ -258,6 +296,8 @@ final class HeadlessRunner {
                 switch (option) {
                     case "--fixture" -> { value.fixture = required(option, next); i++; }
                     case "--cache-state" -> { value.cacheState = required(option, next).toUpperCase(Locale.ROOT); i++; }
+                    case "--reencoded" -> { value.reencoded = required(option, next).toLowerCase(Locale.ROOT); i++; }
+                    case "--reencoded-bitrate" -> { value.reencodedBitrate = nonNegative(option, required(option, next)); i++; }
                     case "--spa-add" -> { value.spaAdd = nonNegative(option, required(option, next)); i++; }
                     case "--output-dir" -> { value.outputDir = resolve(repositoryRoot, required(option, next)); i++; }
                     case "--browser" -> { value.browser = resolve(repositoryRoot, required(option, next)); i++; }
@@ -280,6 +320,8 @@ final class HeadlessRunner {
                 throw new IllegalArgumentException("--fixture は watch, search, anime のいずれかです");
             try { FilterRule.CacheState.valueOf(value.cacheState); }
             catch (IllegalArgumentException exception) { throw new IllegalArgumentException("--cache-state が不正です: " + value.cacheState); }
+            if (!List.of("true", "false", "null").contains(value.reencoded))
+                throw new IllegalArgumentException("--reencoded は true, false, null のいずれかです");
             if (value.noFilters && !value.files.isEmpty())
                 throw new IllegalArgumentException("--no-filters と --file は同時に指定できません");
             if (!arguments.contains("--output-dir")) {

@@ -7,6 +7,8 @@
     cacheState: document.querySelector("#cache-state"),
     url: document.querySelector("#virtual-url"),
     contentType: document.querySelector("#content-type"),
+    reencoded: document.querySelector("#reencoded"),
+    reencodedBitrate: document.querySelector("#reencoded-bitrate"),
     apiFailure: document.querySelector("#api-failure"),
     filterList: document.querySelector("#filter-list"),
     summary: document.querySelector("#summary"),
@@ -40,6 +42,8 @@
     elements.filterList.innerHTML = config.filters.map(filter => {
       const status = filter.errors > 0
         ? `<span class="badge error">${filter.errors} errors</span>`
+        : filter.productionParser === "mismatch"
+          ? `<span class="badge error">parser mismatch</span>`
         : filter.warnings > 0
           ? `<span class="badge warning">${filter.warnings} warnings</span>`
           : `<span class="badge">${filter.rules} rules</span>`;
@@ -70,6 +74,8 @@
     body.set("contentType", elements.contentType.value);
     body.set("cacheState", elements.cacheState.value);
     body.set("cacheApiFailure", String(elements.apiFailure.checked));
+    body.set("reencoded", elements.reencoded.value);
+    body.set("reencodedBitrate", elements.reencodedBitrate.value);
     elements.filterList.querySelectorAll('input[name="file"]:checked').forEach(input => body.append("file", input.value));
     try {
       const response = await fetch("/api/render", { method: "POST", body });

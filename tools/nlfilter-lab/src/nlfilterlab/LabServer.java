@@ -41,6 +41,7 @@ final class LabServer {
     private final FilterEngine engine;
     private final List<Path> trackedFilters;
     private final Map<String, Path> filtersByName = new LinkedHashMap<>();
+    private final Map<String, ParserConformance.Report> conformanceByName = new LinkedHashMap<>();
     private final Map<String, Fixture> fixtures = new LinkedHashMap<>();
     private final Map<String, Preview> previews = new ConcurrentHashMap<>();
 
@@ -54,6 +55,8 @@ final class LabServer {
         this.trackedFilters = RepositoryFilters.tracked(repositoryRoot);
         for (Path path : trackedFilters) {
             filtersByName.put(path.getFileName().toString(), path);
+            conformanceByName.put(path.getFileName().toString(),
+                    ParserConformance.compare(repositoryRoot, path, parser.parse(path)));
         }
         fixtures.put("watch", new Fixture("watch", "視聴ページ", "watch.html",
                 "https://www.nicovideo.jp/watch/sm9", "text/html"));
@@ -114,6 +117,7 @@ final class LabServer {
         boolean first = true;
         for (Path filter : trackedFilters) {
             ParseResult parsed = parser.parse(filter);
+            ParserConformance.Report conformance = conformanceByName.get(filter.getFileName().toString());
             long errors = parsed.diagnostics.stream().filter(d -> d.severity() == Diagnostic.Severity.ERROR).count();
             long warnings = parsed.diagnostics.stream().filter(d -> d.severity() == Diagnostic.Severity.WARNING).count();
             if (!first) {
@@ -123,7 +127,8 @@ final class LabServer {
             json.append("{\"name\":").append(Json.quote(filter.getFileName().toString()))
                     .append(",\"rules\":").append(parsed.rules.size())
                     .append(",\"errors\":").append(errors)
-                    .append(",\"warnings\":").append(warnings).append('}');
+                    .append(",\"warnings\":").append(warnings)
+                    .append(",\"productionParser\":").append(Json.quote(conformance.status())).append('}');
         }
         json.append("],\"fixtures\":[");
         first = true;
@@ -164,6 +169,14 @@ final class LabServer {
         String contentType = first(form, "contentType", fixture.contentType);
         FilterRule.CacheState cacheState = FilterRule.CacheState.parse(first(form, "cacheState", "NONE"));
         boolean cacheApiFailure = Boolean.parseBoolean(first(form, "cacheApiFailure", "false"));
+        String reencoded = first(form, "reencoded", "null");
+        int reencodedBitrate;
+        try {
+            reencodedBitrate = Integer.parseInt(first(form, "reencodedBitrate", "0"));
+        } catch (NumberFormatException exception) {
+            sendJson(exchange, 400, "{\"error\":\"reencodedBitrate は整数で指定してください\"}");
+            return;
+        }
         List<String> selected = form.getOrDefault("file", List.of());
         List<Path> files = new ArrayList<>();
         for (String name : selected) {
@@ -178,10 +191,20 @@ final class LabServer {
 
         ParseResult parsed = new ParseResult();
         for (Path file : files) {
-            parsed.merge(parser.parse(file));
+            ParseResult fileResult = parser.parse(file);
+            ParserConformance.Report conformance = conformanceByName.get(file.getFileName().toString());
+            if (conformance.status().equals("mismatch")) {
+                fileResult.diagnostics.add(new Diagnostic(Diagnostic.Severity.ERROR, file, 0,
+                        "production-parser-mismatch", String.join("; ", conformance.differences())));
+            } else if (conformance.status().equals("unavailable")) {
+                fileResult.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, file, 0,
+                        "production-parser-unavailable", conformance.reason()));
+            }
+            parsed.merge(fileResult);
         }
         String original = Files.readString(fixtureRoot.resolve(fixture.file), StandardCharsets.UTF_8);
-        SimulationRequest request = new SimulationRequest(fixture.id, url, contentType, 200, cacheState, cacheApiFailure);
+        SimulationRequest request = new SimulationRequest(fixture.id, url, contentType, 200, cacheState,
+                cacheApiFailure, reencoded, reencodedBitrate);
         SimulationResult simulation = engine.simulate(parsed.rules, request, original);
         simulation.diagnostics.addAll(0, parsed.diagnostics);
         String token = UUID.randomUUID().toString();
@@ -219,7 +242,22 @@ final class LabServer {
                     .append(",\"code\":").append(Json.quote(diagnostic.code()))
                     .append(",\"message\":").append(Json.quote(diagnostic.display(repositoryRoot))).append('}');
         }
-        json.append("]}");
+        json.append("],\"state\":{\"effectiveUrl\":").append(Json.quote(simulation.effectiveUrl))
+                .append(",\"variables\":{");
+        first = true;
+        for (Map.Entry<String, String> entry : simulation.variables.entrySet()) {
+            if (!first) json.append(',');
+            first = false;
+            json.append(Json.quote(entry.getKey())).append(':').append(Json.quote(entry.getValue()));
+        }
+        json.append("},\"listAdditions\":{");
+        first = true;
+        for (Map.Entry<String, List<String>> entry : simulation.listAdditions.entrySet()) {
+            if (!first) json.append(',');
+            first = false;
+            json.append(Json.quote(entry.getKey())).append(':').append(Json.stringArray(entry.getValue()));
+        }
+        json.append("}}}");
         sendJson(exchange, 200, json.toString());
     }
 

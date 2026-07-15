@@ -30,10 +30,14 @@ public final class NlFilterLabTests {
         run("EachLine行数不一致を検出", () -> eachLineMismatch(temporary));
         run("EachLineを行ごとに適用", () -> eachLine(repository, temporary));
         run("URLとContent-Typeの非対象を除外", () -> contextSelection(repository, temporary));
+        run("MatchLocalを本体のlocal URL判定で適用", () -> matchLocal(repository, temporary));
         run("idGroupの5状態を切り替え", () -> cacheVariants(repository));
         run("idGroup第2値から動画IDを補完", () -> idGroupFallback(repository, temporary));
         run("単独キャッシュ分岐とnoCache null groupを本体互換で処理", () -> legacyCacheBranches(repository, temporary));
-        run("未対応の状態機能と条件マクロを確実にスキップ", () -> unsupportedRules(temporary));
+        run("LST・AddList・RequireHeader参照を疑似実行", () -> stateAndHeaderMacros(repository, temporary));
+        run("SET・INC・AddVariable・RequestHeaderを疑似実行", () -> dynamicStateAndRequestHeader(repository, temporary));
+        run("NEST・nlcase・watch静的変数を疑似実行", () -> advancedReplacementMacros(repository, temporary));
+        run("再エンコード情報を明示モックで疑似実行", () -> environmentDependentMacros(repository, temporary));
         run("URL optional groupと空TSを本体互換で展開", () -> macroCompatibility(repository, temporary));
         run("StyleとScriptをhead/bodyへ挿入", () -> appendSections(repository, temporary));
         run("Appendの大文字小文字と不正セクションを厳格に処理", () -> appendCompatibility(repository, temporary));
@@ -43,6 +47,9 @@ public final class NlFilterLabTests {
         run("追跡ファイルを辞書順で列挙", () -> trackedOrder(repository));
         run("NicoCache_nlパーサーソースの基準一致", () -> parserSourceBaseline(repository));
         run("パーサーソースの差異と部分欠落を検出", () -> parserSourceChanges(repository, temporary));
+        run("稼働中EasyRewriterを構文オラクルとして呼び出す", () -> productionParserOracle(repository));
+        run("全セクション・全オプションを本体内部表現と照合", () -> parserOptionCorpus(repository, temporary));
+        run("副作用のない置換結果を本体実行結果と照合", () -> productionExecutionCorpus(repository, temporary));
         run("ローカルサーバーのOrigin・本文・パス境界", () -> serverBoundaries(repository));
 
         System.out.println("PASS: " + passed + " tests");
@@ -83,6 +90,7 @@ public final class NlFilterLabTests {
                 "[Replace]\nName = each\nURL = example\\.com/\nEachLine = TRUE\nMulti = TRUE\n" +
                 "Match<\ncat\ndog\n>\nReplace<\n猫\n犬\n>\n");
         ParseResult parsed = new FilterParser().parse(file);
+        assertEquals("matched", ParserConformance.compare(repository, file, parsed).status(), "EachLine構文互換");
         SimulationResult result = simulate(repository, parsed.rules, "cat dog cat", "https://example.com/", "text/html",
                 FilterRule.CacheState.NONE);
         assertEquals("猫 犬 猫", result.rendered, "EachLine変換結果");
@@ -105,12 +113,24 @@ public final class NlFilterLabTests {
                 "[Replace]\nName = context\nURL = example\\.com/watch/\nContentType = text/html\n" +
                 "Match<\nold\n>\nReplace<\nnew\n>\n");
         ParseResult parsed = new FilterParser().parse(file);
+        assertEquals("matched", ParserConformance.compare(repository, file, parsed).status(), "条件構文互換");
         SimulationResult wrongUrl = simulate(repository, parsed.rules, "old", "https://example.com/search/", "text/html",
                 FilterRule.CacheState.NONE);
         SimulationResult wrongType = simulate(repository, parsed.rules, "old", "https://example.com/watch/1", "application/json",
                 FilterRule.CacheState.NONE);
         assertEquals("old", wrongUrl.rendered, "URL非対象");
         assertEquals("old", wrongType.rendered, "Content-Type非対象");
+    }
+
+    private static void matchLocal(Path repository, Path temporary) throws Exception {
+        Path file = write(temporary, "match-local.txt", HEADER +
+                "[Replace]\nName = broad-off\nURL = www\\.nicovideo\\.jp/\nMatch<\nx\n>\nReplace<\noff\n>\n" +
+                "[Replace]\nName = explicit\nURL = www\\.nicovideo\\.jp/local/\nMatch<\nx\n>\nReplace<\nexplicit\n>\n" +
+                "[Replace]\nName = broad-on\nURL = www\\.nicovideo\\.jp/\nMatchLocal = TRUE\nMatch<\nexplicit\n>\nReplace<\non\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        SimulationResult result = simulate(repository, parsed.rules, "x",
+                "https://www.nicovideo.jp/local/test.js", "text/javascript", FilterRule.CacheState.NONE);
+        assertEquals("on", result.rendered, "MatchLocal変換");
     }
 
     private static void cacheVariants(Path repository) {
@@ -135,6 +155,7 @@ public final class NlFilterLabTests {
                 "[Replace]\nName = fallback\nURL = example\\.com/\nidGroup = 1,2\n" +
                 "Match<\n(?:video/(sm\\d+)|thumb/(\\d+))\n>\nReplace<\n<eachSmid>-cached\n>\n");
         ParseResult parsed = new FilterParser().parse(file);
+        assertEquals("matched", ParserConformance.compare(repository, file, parsed).status(), "idGroup構文互換");
         SimulationResult result = simulate(repository, parsed.rules, "thumb/9", "https://example.com/", "text/html",
                 FilterRule.CacheState.NORMAL);
         assertEquals("sm9-cached", result.rendered, "idGroup第2値補完");
@@ -157,14 +178,62 @@ public final class NlFilterLabTests {
         assertEquals("missing", nullNoCache.rendered, "null noCache分岐");
     }
 
-    private static void unsupportedRules(Path temporary) throws Exception {
-        Path file = write(temporary, "unsupported.txt", HEADER +
+    private static void stateAndHeaderMacros(Path repository, Path temporary) throws Exception {
+        Path list = temporary.resolve("macro-list.txt");
+        Files.writeString(list, "# comment\ncat\nd.g\n", StandardCharsets.UTF_8);
+        String relativeList = repository.getParent().relativize(list).toString().replace('\\', '/');
+        Path file = write(temporary, "supported-state.txt", HEADER +
                 "[Replace]\nName = list\nURL = example\\.com/\nAddList = x.lst\nMatch<\na\n>\nReplace<\nb\n>\n" +
-                "[Replace]\nName = condition\nURL = example\\.com/\nRequire = $LST(\"x.lst\")\nMatch<\na\n>\nReplace<\nb\n>\n" +
+                "[Replace]\nName = condition\nURL = example\\.com/\nRequire = $LST(\"" + relativeList + "\")\nMatch<\n(cat)\n>\nReplace<\nlist-$1\n>\n" +
+                "[Replace]\nName = consume-added-list\nURL = example\\.com/\nMatch<\n$LST(\"x.lst\")\n>\nReplace<\nseen-$1\n>\n" +
                 "[Replace]\nName = header-ref\nURL = example\\.com/\nRequireHeader = (GET)\nMatch<\na\n>\nReplace<\n$RequireHeader1\n>\n");
         ParseResult parsed = new FilterParser().parse(file);
-        assertEquals(3, parsed.rules.size(), "構文上受理する未対応ルール数");
-        assertTrue(parsed.rules.stream().noneMatch(rule -> rule.simulationSupported), "未対応ルールを全てスキップ");
+        assertEquals("matched", ParserConformance.compare(repository, file, parsed).status(), "状態マクロ構文互換");
+        assertEquals(4, parsed.rules.size(), "対応ルール数");
+        assertTrue(parsed.rules.stream().allMatch(rule -> rule.simulationSupported), "状態ルールを疑似実行可能");
+        SimulationResult result = simulate(repository, parsed.rules, "a b cat", "https://example.com/", "text/html",
+                FilterRule.CacheState.NONE);
+        assertEquals("GET seen-b list-cat", result.rendered, "RequireHeader参照とLST条件");
+        assertEquals(List.of("b"), result.listAdditions.get("x.lst"), "AddList疑似結果");
+    }
+
+    private static void dynamicStateAndRequestHeader(Path repository, Path temporary) throws Exception {
+        Path file = write(temporary, "dynamic-state.txt", HEADER +
+                "[RequestHeader]\nName = redirect\nEachLine = TRUE\nMatch<\nhttps://example\\.com/old/(.*)\n>\nReplace<\nhttps://example.com/new/$1\n>\n" +
+                "[Replace]\nName = state\nURL = example\\.com/new/\nMulti = TRUE\nMatch<\n$SET(value=ok)$INC(count)(item)\n>\nReplace<\n<nlVar:value>-$1-<nlVar:count>\n>\n" +
+                "[Replace]\nName = collect\nURL = example\\.com/new/\nMulti = TRUE\nAddVariable = joined\nMatch<\n(x)\n>\nReplace<\n$1\n>\n" +
+                "[Replace]\nName = use-var\nURL = example\\.com/new/\nMatch<\nEND\n>\nReplace<\n<nlVar:joined>\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        assertEquals("matched", ParserConformance.compare(repository, file, parsed).status(), "RequestHeader構文互換");
+        SimulationResult result = simulate(repository, parsed.rules, "item item xx END",
+                "https://example.com/old/page", "text/html", FilterRule.CacheState.NONE);
+        assertEquals("https://example.com/new/page", result.effectiveUrl, "RequestHeader URL");
+        assertEquals("ok-item-1 ok-item-2 xx xx", result.rendered, "SET/INC/AddVariable");
+        assertEquals("xx", result.variables.get("joined"), "AddVariable値");
+    }
+
+    private static void advancedReplacementMacros(Path repository, Path temporary) throws Exception {
+        Path file = write(temporary, "advanced-macros.txt", HEADER +
+                "[Replace]\nName = nest\nURL = www\\.nicovideo\\.jp/watch/\nMatch<\n$NEST(<div[^>]*>,target,</div>)\n>\nReplace<\nX\n>\n" +
+                "[Replace]\nName = case\nURL = www\\.nicovideo\\.jp/watch/\nMatch<\nCASE\n>\nReplace<\n<nlcase \"b\"><when \"a\">A<when \"b\">B<when else>Z</nlcase>-<smid>-<id>-<memoryId>\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        assertEquals("matched", ParserConformance.compare(repository, file, parsed).status(), "$NEST構文互換");
+        SimulationResult result = simulate(repository, parsed.rules,
+                "<div><div>target</div></div> CASE", "https://www.nicovideo.jp/watch/sm9", "text/html",
+                FilterRule.CacheState.NONE);
+        assertEquals("<div>X</div> B-sm9-9-sm9", result.rendered, "$NEST/nlcase/watch変数");
+    }
+
+    private static void environmentDependentMacros(Path repository, Path temporary) throws Exception {
+        Path file = write(temporary, "environment-dependent.txt", HEADER +
+                "[Replace]\nName = reencoded\nURL = example\\.com/\nMatch<\nx\n>\nReplace<\n$REENCODED(sm9)-$REENCODED_BITRATE(sm9)\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        assertEquals(1, parsed.rules.size(), "実環境依存ルール数");
+        assertTrue(parsed.rules.get(0).simulationSupported, "実キャッシュ依存マクロを明示モック可能");
+        SimulationResult result = new FilterEngine(repository).simulate(parsed.rules,
+                new SimulationRequest("test", "https://example.com/", "text/html", 200,
+                        FilterRule.CacheState.NONE, false, "true", 3200), "x");
+        assertEquals("true-3200", result.rendered, "再エンコードモック");
     }
 
     private static void macroCompatibility(Path repository, Path temporary) throws Exception {
@@ -205,6 +274,17 @@ public final class NlFilterLabTests {
         ParseResult invalidResult = new FilterParser().parse(invalid);
         assertDiagnostic(invalidResult, "invalid-append");
         assertEquals(0, invalidResult.rules.size(), "不正Appendルール数");
+
+        Path special = write(temporary, "append-special.txt", HEADER +
+                "[Script]\nName = external\nURL = example\\.com/\nAppend<\nhttps://www.nicovideo.jp/local/test.js\n>\n");
+        ParseResult specialResult = new FilterParser().parse(special);
+        assertEquals(FilterRule.Section.REPLACE, specialResult.rules.get(0).section, "特殊Appendセクション");
+        assertEquals("script: external", specialResult.rules.get(0).name, "特殊Append名");
+        assertContains(specialResult.rules.get(0).replacements.get(0),
+                "<script type=\"text/javascript\" src=\"https://www.nicovideo.jp/$TS(local/test.js)\"></script>",
+                "特殊Append変換");
+        assertEquals("matched", ParserConformance.compare(repository, special, specialResult).status(),
+                "特殊Append本体互換");
     }
 
     private static void parserSourceBaseline(Path repository) {
@@ -235,6 +315,49 @@ public final class NlFilterLabTests {
         Files.writeString(partialLab.resolve("parser-baseline.properties"), baseline, StandardCharsets.UTF_8);
         assertEquals("source-partial", ParserCompatibility.inspect(partialRepository, partialLab).statusName(),
                 "partial source");
+    }
+
+    private static void productionParserOracle(Path repository) throws Exception {
+        int productionRules = 0;
+        for (Path file : RepositoryFilters.tracked(repository)) {
+            ProductionParserOracle.Result result = ProductionParserOracle.parse(repository, file);
+            assertTrue(result.available(), "production parser unavailable: " + result.reason());
+            productionRules += result.rules().size();
+            ParseResult lab = new FilterParser().parse(file);
+            ParserConformance.Report conformance = ParserConformance.compare(repository, file, lab);
+            assertEquals("matched", conformance.status(), file.getFileName() + ": " + conformance.differences());
+        }
+        assertEquals(40, productionRules, "production parser rule count");
+    }
+
+    private static void parserOptionCorpus(Path repository, Path temporary) throws Exception {
+        Path file = write(temporary, "all-options.txt", HEADER +
+                "[Config]\nName = config\nMatch<\nkey\n>\nReplace<\nvalue\n>\n" +
+                "[Replace]\nName = options\nFullURL = https://example\\.com/(watch)/\nStatusCode = 200, 404\n" +
+                "ContentType = !image/\nRequire = !blocked\nRequireHeader = (Agent)\nMatchLocal = TRUE\n" +
+                "Multi = TRUE\nEachLine = FALSE\nReplaceOnly = TRUE\nReplaceDelay = TRUE\nDebug = TRUE\n" +
+                "idGroup = !1,URL1\nAddList = list.txt\nAddVariable = variable\n" +
+                "Match<\n(sm\\d+)\n>\nReplace<\n\\$1 literal\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        ParserConformance.Report report = ParserConformance.compare(repository, file, parsed);
+        assertEquals("matched", report.status(), "all options: " + report.differences());
+        assertTrue(parsed.rules.get(1).idGroup2 == -1, "非数字idGroup第2値の内部表現");
+    }
+
+    private static void productionExecutionCorpus(Path repository, Path temporary) throws Exception {
+        Path file = write(temporary, "execution-corpus.txt", HEADER +
+                "[Replace]\nName = state-case\nURL = example\\.com/\nMulti = TRUE\n" +
+                "Match<\n$SET(mode=b)$INC(n)(item)\n>\n" +
+                "Replace<\n<nlcase \"b\"><when \"a\">A<when \"b\">B<when else>Z</nlcase>-$1-<nlVar:n>\n>\n" +
+                "[Replace]\nName = nest\nURL = example\\.com/\nMatch<\n$NEST(<div[^>]*>,target,</div>)\n>\nReplace<\nN\n>\n");
+        ParseResult parsed = new FilterParser().parse(file);
+        String input = "item item <div><div>target</div></div>";
+        String lab = simulate(repository, parsed.rules, input, "https://example.com/", "text/html",
+                FilterRule.CacheState.NONE).rendered;
+        ProductionParserOracle.ExecutionResult production = ProductionParserOracle.executePure(repository, file,
+                "https://example.com/", input);
+        assertTrue(production.available(), "production execution unavailable: " + production.reason());
+        assertEquals(production.content(), lab, "production execution result");
     }
 
     private static void crlfReplacement(Path repository, Path temporary) throws Exception {

@@ -16,10 +16,7 @@ final class FilterParser {
     private static final Pattern REPLACEMENT_GROUP = Pattern.compile("(?<![\\\\$])\\$(\\d+)");
     private static final Pattern URL_GROUP = Pattern.compile("(?<!\\\\)\\$URL(\\d+)(?!\\d)");
     private static final Pattern REQUIRE_HEADER_GROUP = Pattern.compile("(?<!\\\\)\\$RequireHeader(\\d+)(?!\\d)");
-    private static final Pattern UNSUPPORTED_MACRO = Pattern.compile(
-            "(?<!\\\\)\\$(?:LST|INC|SET|REENCODED|REENCODED_BITRATE)\\(|^\\$NEST\\(|<nlcase(?:\\s|>)");
-    private static final Pattern NL_VARIABLE = Pattern.compile("<nlVar:([^>]+)>");
-    private static final Pattern LEGACY_VARIABLE = Pattern.compile("<(?:id|smid|memoryId)>");
+    private static final Pattern UNSUPPORTED_MACRO = Pattern.compile("(?!)");
 
     private enum State {
         OUTSIDE,
@@ -125,6 +122,7 @@ final class FilterParser {
                     result.diagnostics.add(error(file, lineNumber, "invalid-append",
                             "Append< は [Script] または [Style] で使用してください"));
                 } else {
+                    current.appendBlock = true;
                     current.eachLine = false;
                     current.replaceOnly = true;
                     current.rawMatches.add(current.section == FilterRule.Section.STYLE ? "(?=</head>)" : "(?=</body>)");
@@ -168,7 +166,14 @@ final class FilterParser {
         for (String expression : splitEachLine(raw, rule.eachLine)) {
             rule.rawMatches.add(expression);
             try {
-                rule.matches.add(Pattern.compile(expression));
+                Matcher nest = DynamicPatternSupport.NEST.matcher(expression);
+                if (nest.matches()) {
+                    Pattern.compile("(" + nest.group(1) + ")|(" + nest.group(3) + ")");
+                    Pattern.compile(nest.group(2));
+                    rule.matches.add(Pattern.compile("(?!)"));
+                } else {
+                    rule.matches.add(Pattern.compile(DynamicPatternSupport.prepareForCompile(expression)));
+                }
             } catch (PatternSyntaxException exception) {
                 result.diagnostics.add(error(rule.file, line, "pattern",
                         "Match の Java 正規表現が不正です: " + exception.getDescription()));
@@ -182,6 +187,26 @@ final class FilterParser {
         }
         if (!rule.eachLine && raw.endsWith("\r\n")) {
             raw = raw.substring(0, raw.length() - 2);
+        }
+        if (rule.appendBlock && raw.matches("(?s)^https?://.*")) {
+            StringBuilder transformed = new StringBuilder();
+            for (String appendLine : raw.split("\\r\\n", -1)) {
+                String value = appendLine;
+                if (appendLine.matches("https?://.*")) {
+                    Matcher local = Pattern.compile("(https?://[^/]+\\.nicovideo\\.jp/)(local/[^?]+)")
+                            .matcher(appendLine);
+                    if (local.matches()) value = local.group(1) + "$TS(" + local.group(2) + ")";
+                    value = rule.section == FilterRule.Section.STYLE
+                            ? "<link rel=\"stylesheet\" type=\"text/css\" href=\"" + value + "\" />"
+                            : "<script type=\"text/javascript\" src=\"" + value + "\"></script>";
+                }
+                if (transformed.length() > 0) transformed.append("\r\n");
+                transformed.append(value);
+            }
+            rule.section = FilterRule.Section.REPLACE;
+            rule.name = "script: " + rule.name;
+            rule.replaceOnly = false;
+            raw = transformed + "<CRLF>";
         }
         raw = raw.replace("<CRLF>", "\r\n").replace("<TAB>", "\t");
         rule.replacements.addAll(splitEachLine(raw, rule.eachLine));
@@ -265,7 +290,8 @@ final class FilterParser {
 
     private static FilterRule.Condition compileCondition(String value) {
         boolean negated = value.startsWith("!");
-        return new FilterRule.Condition(Pattern.compile(negated ? value.substring(1) : value), negated);
+        String expression = negated ? value.substring(1) : value;
+        return new FilterRule.Condition(Pattern.compile(DynamicPatternSupport.prepareForCompile(expression)), negated);
     }
 
     private static boolean parseBoolean(FilterRule rule, int line, String key, String value, ParseResult result) {
@@ -288,7 +314,9 @@ final class FilterParser {
             return;
         }
         rule.idGroup = Integer.parseInt(first);
-        if (values.length > 1) {
+        if (values.length == 1) {
+            rule.idGroup2 = 0;
+        } else {
             rule.idGroupSecondRaw = values[1];
             if (values[1].matches("\\d+")) {
                 rule.idGroup2 = Integer.parseInt(values[1]);
@@ -319,17 +347,9 @@ final class FilterParser {
         }
         if (rule.requireHeader != null) {
             result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
-                    "simulation-limit", "RequireHeader は構文のみ検査し、ローカルテスターでは固定モックを使用します"));
+                    "simulation-mock", "RequireHeader は疑似リクエストヘッダーで評価します。実ブラウザーのCookie等は含みません"));
         }
-        if ((rule.section == FilterRule.Section.SCRIPT || rule.section == FilterRule.Section.STYLE) &&
-                !rule.replacements.isEmpty() && rule.replacements.get(0).matches("(?s)^https?://.*")) {
-            rule.simulationSupported = false;
-            result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
-                    "special-append", "URLだけを指定するAppend形式は疑似適用未対応のため、このルールをスキップします"));
-        }
-        if (rule.addList != null || rule.addVariable != null || rule.section == FilterRule.Section.REQUEST_HEADER ||
-                rule.section == FilterRule.Section.CONFIG) {
-            rule.simulationSupported = false;
+        if (rule.section == FilterRule.Section.CONFIG) {
             result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
                     "simulation-limit", rule.section.label() + " の状態変更はローカルテスターでは実行しません"));
         }
@@ -337,12 +357,6 @@ final class FilterParser {
             rule.simulationSupported = false;
             result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
                     "simulation-limit", "idGroup の非数字第2引数は拡張依存のため疑似適用をスキップします"));
-        }
-        if (containsUnsupported(rule.rawRequire) || containsUnsupported(rule.rawRequireHeader) ||
-                containsUnsupported(rule.rawContentType)) {
-            rule.simulationSupported = false;
-            result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
-                    "unsupported-condition", "条件式に未対応の動的マクロがあるため疑似適用をスキップします"));
         }
 
         int urlGroups = rule.urlPattern == null ? -1 : rule.urlPattern.matcher("").groupCount();
@@ -376,9 +390,7 @@ final class FilterParser {
                 }
             }
             Matcher headerMatcher = REQUIRE_HEADER_GROUP.matcher(replacement);
-            boolean hasRequireHeaderReference = false;
             while (headerMatcher.find()) {
-                hasRequireHeaderReference = true;
                 int reference = Integer.parseInt(headerMatcher.group(1));
                 if (requireHeaderGroups < 0) {
                     result.diagnostics.add(error(rule.file, rule.sectionLine, "require-header-missing",
@@ -389,28 +401,13 @@ final class FilterParser {
                                     requireHeaderGroups + " を超えています"));
                 }
             }
-            if (hasRequireHeaderReference) {
-                rule.simulationSupported = false;
-                result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
-                        "simulation-limit", "$RequireHeaderN の置換展開は未対応のため疑似適用をスキップします"));
-            }
-            Matcher nlVariable = NL_VARIABLE.matcher(replacement);
-            boolean unsupportedVariable = false;
-            while (nlVariable.find()) {
-                unsupportedVariable |= !nlVariable.group(1).equals("VERSION");
-            }
             if (UNSUPPORTED_MACRO.matcher(replacement).find() ||
-                    UNSUPPORTED_MACRO.matcher(rule.rawMatches.get(index)).find() ||
-                    unsupportedVariable || LEGACY_VARIABLE.matcher(replacement).find()) {
+                    UNSUPPORTED_MACRO.matcher(rule.rawMatches.get(index)).find()) {
                 rule.simulationSupported = false;
                 result.diagnostics.add(new Diagnostic(Diagnostic.Severity.WARNING, rule.file, rule.sectionLine,
                         "unsupported-macro", "未対応または状態を持つマクロがあるため、ローカルテスターではこのルールをスキップします"));
             }
         }
-    }
-
-    private static boolean containsUnsupported(String value) {
-        return value != null && UNSUPPORTED_MACRO.matcher(value.startsWith("!") ? value.substring(1) : value).find();
     }
 
     private static boolean hasErrorSince(ParseResult result, int start) {

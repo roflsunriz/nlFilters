@@ -62,7 +62,7 @@ final class FilterRule {
     final Path file;
     final String sourceName;
     final int sectionLine;
-    final Section section;
+    Section section;
     String name;
     String rawUrl;
     Pattern urlPattern;
@@ -87,6 +87,7 @@ final class FilterRule {
     String addList;
     String addVariable;
     boolean simulationSupported = true;
+    boolean appendBlock;
     final List<String> rawMatches = new ArrayList<>();
     final List<Pattern> matches = new ArrayList<>();
     final List<String> replacements = new ArrayList<>();

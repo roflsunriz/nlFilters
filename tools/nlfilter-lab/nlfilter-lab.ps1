@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('check', 'source-check', 'serve', 'headless', 'test')]
+    [ValidateSet('check', 'source-check', 'compatibility', 'serve', 'headless', 'test')]
     [string]$Command = 'check',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Arguments

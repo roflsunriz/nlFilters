@@ -15,6 +15,7 @@
 
 ```powershell
 .\tools\nlfilter-lab\nlfilter-lab.ps1 source-check
+.\tools\nlfilter-lab\nlfilter-lab.ps1 compatibility --json
 .\tools\nlfilter-lab\nlfilter-lab.ps1 test
 .\tools\nlfilter-lab\nlfilter-lab.ps1 check
 git diff --check
@@ -31,7 +32,7 @@ git diff --check
 
 ## 本体パーサーが変わった場合
 
-`source-check` が差異を報告したら、`EasyRewriter.java`、`JavaPattern.java`、`JavaMatcher.java`、`NestPattern.java`、`NestMatcher.java` の変更内容を確認します。構文受理、正規表現、置換、キャッシュ分岐への影響をテストへ反映し、必要ならLab実装を修正します。全テスト完了後にだけ `tools/nlfilter-lab/parser-baseline.properties` のSHA-256を現在値へ更新します。基準値だけを先に更新してはいけません。
+`source-check` が差異を報告したら、`EasyRewriter.java`、`JavaPattern.java`、`JavaMatcher.java`、`NestPattern.java`、`NestMatcher.java` とJAR内の対応classの変更内容を確認します。構文受理、正規表現、置換、キャッシュ分岐への影響を互換コーパスへ反映し、必要ならLab実装を修正します。`compatibility --json` と全テスト完了後にだけ `tools/nlfilter-lab/parser-baseline.properties` のSHA-256を現在値へ更新します。基準値だけを先に更新してはいけません。
 
 ## 復旧
 

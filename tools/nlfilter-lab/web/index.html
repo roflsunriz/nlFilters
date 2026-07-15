@@ -37,6 +37,16 @@
         <label>Content-Type
           <input id="content-type" name="contentType" required spellcheck="false">
         </label>
+        <label>再エンコード状態
+          <select id="reencoded" name="reencoded">
+            <option value="null">不明</option>
+            <option value="true">再エンコード済み</option>
+            <option value="false">未再エンコード</option>
+          </select>
+        </label>
+        <label>再エンコード bitrate
+          <input id="reencoded-bitrate" name="reencodedBitrate" type="number" min="0" value="0">
+        </label>
         <label class="switch"><input id="api-failure" name="cacheApiFailure" type="checkbox" value="true"> キャッシュAPIを503にする</label>
       </div>
 

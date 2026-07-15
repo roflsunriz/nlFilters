@@ -10,6 +10,11 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Properties;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Collections;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 final class ParserCompatibility {
     enum Status {
@@ -47,6 +52,7 @@ final class ParserCompatibility {
             "NestPattern.java",
             "NestMatcher.java"
     );
+    private static final Map<String, String> JAR_ENTRIES = jarEntries();
 
     private ParserCompatibility() {
     }
@@ -86,6 +92,29 @@ final class ParserCompatibility {
                         expected.equalsIgnoreCase(actual) ? Status.MATCHED : Status.MISMATCH));
             }
         }
+        Path jar = repositoryRoot.getParent().resolve("NicoCache_nl.jar");
+        for (Map.Entry<String, String> specification : JAR_ENTRIES.entrySet()) {
+            String name = specification.getKey();
+            String expected = baseline.getProperty(name);
+            if (expected == null || expected.isBlank()) {
+                entries.add(new Entry(name, jar, expected, null, Status.BASELINE_MISSING));
+            } else if (!Files.isRegularFile(jar)) {
+                entries.add(new Entry(name, jar, expected, null, Status.SOURCE_MISSING));
+            } else {
+                try (ZipFile archive = new ZipFile(jar.toFile())) {
+                    ZipEntry binary = archive.getEntry(specification.getValue());
+                    if (binary == null) {
+                        entries.add(new Entry(name, jar, expected, null, Status.SOURCE_MISSING));
+                    } else {
+                        String actual = sha256(archive.getInputStream(binary));
+                        entries.add(new Entry(name, jar, expected, actual,
+                                expected.equalsIgnoreCase(actual) ? Status.MATCHED : Status.MISMATCH));
+                    }
+                } catch (IOException exception) {
+                    entries.add(new Entry(name, jar, expected, null, Status.SOURCE_MISSING));
+                }
+            }
+        }
         return new Report(baseline.getProperty("baselineDate", "unknown"), List.copyOf(entries));
     }
 
@@ -107,18 +136,32 @@ final class ParserCompatibility {
     }
 
     private static String sha256(Path path) throws IOException {
+        try (InputStream input = Files.newInputStream(path)) {
+            return sha256(input);
+        }
+    }
+
+    private static String sha256(InputStream input) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            try (InputStream input = Files.newInputStream(path)) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = input.read(buffer)) >= 0) {
-                    digest.update(buffer, 0, read);
-                }
-            }
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) digest.update(buffer, 0, read);
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is unavailable", exception);
         }
+    }
+
+    private static Map<String, String> jarEntries() {
+        Map<String, String> entries = new LinkedHashMap<>();
+        entries.put("jar.EasyRewriter.class", "dareka/processor/impl/EasyRewriter.class");
+        entries.put("jar.FilterPattern.class", "dareka/processor/impl/EasyRewriter$FilterPattern.class");
+        entries.put("jar.UserFilter.class", "dareka/processor/impl/EasyRewriter$UserFilter.class");
+        entries.put("jar.JavaPattern.class", "dareka/common/regex/JavaPattern.class");
+        entries.put("jar.JavaMatcher.class", "dareka/common/regex/JavaMatcher.class");
+        entries.put("jar.NestPattern.class", "dareka/common/regex/NestPattern.class");
+        entries.put("jar.NestMatcher.class", "dareka/common/regex/NestMatcher.class");
+        return Collections.unmodifiableMap(entries);
     }
 }
